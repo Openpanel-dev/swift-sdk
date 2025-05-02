@@ -5,19 +5,17 @@ let package = Package(
     name: "OpenPanel",
     platforms: [
         .iOS(.v13),
-        .macOS(.v10_15)
+        .macOS(.v10_15),
+        .tvOS(.v15)
     ],
     products: [
         .library(
             name: "OpenPanel",
             targets: ["OpenPanel"]),
     ],
-    dependencies: [
-        // Add any external dependencies here
-    ],
     targets: [
         .target(
             name: "OpenPanel",
-            dependencies: []),
+            path: "OpenPanel-Swift-SDK")
     ]
 )

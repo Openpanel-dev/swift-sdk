@@ -1,6 +1,8 @@
 import Foundation
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
+#endif
+#if os(iOS)
 import WebKit
 #elseif os(macOS)
 import AppKit
@@ -10,11 +12,37 @@ import WebKit
 // MARK: - DeviceInfo
 
 internal class DeviceInfo {
+    struct Info {
+        var brand: String = "Apple"
+        var os: String // tvOS
+        var osVersion: String // 18.4
+        var device: String // smarttv
+        var model: String // AppleTV6,2
+        
+        var osVersionUnderscored: String {
+            self.osVersion.replacingOccurrences(of: ".", with: "_")
+        }
+    }
+    
+    static func getInfo() -> Info {
+        #if os(iOS)
+        return getiOSInfo()
+        #elseif os(macOS)
+        return getMacOSInfo()
+        #elseif os(tvOS)
+        return getTvOSInfo()
+        #else
+        return getGenericInfo()
+        #endif
+    }
+
     static func getUserAgent() -> String {
         #if os(iOS)
-        return getiOSUserAgent()
+        return getiOSUserAgent(getiOSInfo())
         #elseif os(macOS)
-        return getMacOSUserAgent()
+        return getMacOSUserAgent(getMacOSInfo())
+        #elseif os(tvOS)
+        return getTvOSUserAgent(getTvOSInfo())
         #else
         return getGenericUserAgent()
         #endif
@@ -24,7 +52,19 @@ internal class DeviceInfo {
         return Bundle.main.bundlePath.hasSuffix(".appex")
     }
     
-    private static func getiOSUserAgent() -> String {
+    #if os(iOS)
+    static func getiOSInfo() -> Info {
+        let device = UIDevice.current
+
+        // TODO: Get specific iPhone model
+        return Info(
+            os: "iOS",
+            osVersion: device.systemVersion,
+            device: "mobile",
+            model: "iPhone")
+    }
+
+    private static func getiOSUserAgent(_ info: Info) -> String {
         if !isRunningInExtension() {
             let webView = WKWebView(frame: .zero)
             var userAgent = ""
@@ -41,19 +81,23 @@ internal class DeviceInfo {
             }
             
             _ = semaphore.wait(timeout: .now() + 1.0)
-
-            userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
             
             if userAgent.isEmpty {
-                userAgent = getBasicUserAgent()
+                userAgent = "Mozilla/5.0 (iPhone; U)"
             }
+
+            userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
             
             return userAgent
         } else {
             return getBasicUserAgent()
         }
     }
-
+    
+    
+    #endif
+    
+    #if canImport(UIKit)
     private static func getBasicUserAgent() -> String {
         let device = UIDevice.current
         let systemVersion = device.systemVersion
@@ -68,22 +112,83 @@ internal class DeviceInfo {
 
         return userAgent
     }
+    #endif
 
-    private static func getMacOSUserAgent() -> String {
+    #if os(macOS)
+    static func getMacOSInfo() -> Info {
         let processInfo = ProcessInfo.processInfo
         let osVersion = processInfo.operatingSystemVersionString
         let versionParts = osVersion.components(separatedBy: " ")
         let version = versionParts.count > 1 ? versionParts[1] : "Unknown"
         
-        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version.replacingOccurrences(of: ".", with: "_"))) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
-        
-        return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
+        return Info(
+            os: "Mac OS",
+            osVersion: version,
+            device: "desktop",
+            model: getMacModelIdentifier() ?? "Unknown")
     }
     
+    private static func getMacOSUserAgent(_ info: Info) -> String {
+        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(info.osVersionUnderscored); \(info.model)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
+
+        return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
+    }
+
+    static func getMacModelIdentifier() -> String? {
+        var size: Int = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var machine = [CChar](repeating: 0, count: Int(size))
+        if sysctlbyname("hw.model", &machine, &size, nil, 0) != 0 {
+            return nil
+        }
+        let code: String = String(cString:machine)
+        
+        return code
+    }
+    #endif
     private static func getGenericUserAgent() -> String {
         let osName = ProcessInfo.processInfo.operatingSystemVersionString
         return "OpenPanel/\(OpenPanel.sdkVersion) (\(osName))"
     }
+    
+    static func getGenericInfo() -> Info {
+        return Info(
+            os: "Unknown",
+            osVersion: "Unknown",
+            device: "Unknown",
+            model: "Unknown")
+    }
+
+    #if os(tvOS)
+    static func getAppleTVModelIdentifier() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let mirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = mirror.children.reduce(into: "") { id, child in
+            guard let byte = child.value as? Int8, byte != 0 else { return }
+            id.append(String(UnicodeScalar(UInt8(byte))))
+        }
+        return identifier
+    }
+    
+    static func getTvOSInfo() -> Info {
+        let device = UIDevice.current
+        return Info(
+            os: "tvOS",
+            osVersion: device.systemVersion,
+            device: "smarttv",
+            model: getAppleTVModelIdentifier())
+    }
+    
+    private static func getTvOSUserAgent(_ info: Info) -> String {
+        // Construct a user agent string for tvOS
+        var userAgent = "Mozilla/5.0 (Apple TV; \(info.model); \(info.os) \(info.osVersionUnderscored)) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/\(info.osVersion)"
+
+        userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
+
+        return userAgent
+    }
+    #endif
 }
 
 // MARK: - Payload Types
@@ -360,6 +465,20 @@ public class OpenPanel {
             defaultHeaders: defaultHeaders
         ))
 
+        
+        let info = DeviceInfo.getInfo()
+        shared.globalQueue.async(flags: .barrier) {
+            if shared._global == nil {
+                shared._global = [:]
+            }
+            shared._global?["__brand"] = info.brand
+            shared._global?["__device"] = info.device
+            shared._global?["__os"] = info.os
+            shared._global?["__osVersion"] = info.osVersion
+            shared._global?["__model"] = info.model
+        }
+        
+
         if options.automaticTracking == true {
             shared.setupAutomaticTracking()
         }
@@ -455,7 +574,7 @@ public class OpenPanel {
                 if let global = shared._global {
                     var mergedProperties = global
                     if let payloadProperties = payload.properties {
-                        mergedProperties.merge(payloadProperties) { (_, new) in (new as AnyObject).value }
+                        mergedProperties.merge(payloadProperties) { (_, new) in new }
                     }
                     updatedPayload.properties = mergedProperties.mapValues { AnyCodable($0) }
                 }
