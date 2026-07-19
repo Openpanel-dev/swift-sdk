@@ -2,6 +2,8 @@ import Foundation
 #if os(iOS)
 import UIKit
 import WebKit
+#elseif os(tvOS)
+import UIKit
 #elseif os(macOS)
 import AppKit
 import WebKit
@@ -43,13 +45,11 @@ internal class DeviceInfo {
             
             _ = semaphore.wait(timeout: .now() + 1.0)
 
-            userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
-            
             if userAgent.isEmpty {
-                userAgent = getBasicUserAgent()
+                return getBasicUserAgent()
             }
-            
-            return userAgent
+
+            return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
         } else {
             return getBasicUserAgent()
         }
@@ -72,12 +72,10 @@ internal class DeviceInfo {
     #endif
 
     private static func getMacOSUserAgent() -> String {
-        let processInfo = ProcessInfo.processInfo
-        let osVersion = processInfo.operatingSystemVersionString
-        let versionParts = osVersion.components(separatedBy: " ")
-        let version = versionParts.count > 1 ? versionParts[1] : "Unknown"
-        
-        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version.replacingOccurrences(of: ".", with: "_"))) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+        let version = "\(osVersion.majorVersion)_\(osVersion.minorVersion)_\(osVersion.patchVersion)"
+
+        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
         
         return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
     }
@@ -334,7 +332,7 @@ public class OpenPanel {
     private var options: Options?
     
     public static var sdkVersion: String {
-        return "0.0.1"
+        return "1.0.1"
     }
     
     private init() {
@@ -387,7 +385,9 @@ public class OpenPanel {
         }
         
         if options.waitForProfile == true, profileId == nil {
-            queue.append(payload)
+            globalQueue.async(flags: .barrier) {
+                self.queue.append(payload)
+            }
             return
         }
         
@@ -457,7 +457,7 @@ public class OpenPanel {
                 if let global = shared._global {
                     var mergedProperties = global
                     if let payloadProperties = payload.properties {
-                        mergedProperties.merge(payloadProperties) { (_, new) in (new as AnyObject).value }
+                        mergedProperties.merge(payloadProperties) { (_, new) in (new as? AnyCodable)?.value ?? new }
                     }
                     updatedPayload.properties = mergedProperties.mapValues { AnyCodable($0) }
                 }
@@ -486,8 +486,11 @@ public class OpenPanel {
     }
     
     public func flush() {
-        let currentQueue = queue
-        queue.removeAll()
+        let currentQueue = globalQueue.sync(flags: .barrier) { () -> [TrackHandlerPayload] in
+            let items = queue
+            queue.removeAll()
+            return items
+        }
         for item in currentQueue {
             send(item)
         }
