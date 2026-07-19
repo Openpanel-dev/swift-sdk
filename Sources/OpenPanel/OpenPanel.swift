@@ -37,6 +37,51 @@ internal class DeviceInfo {
         // app traffic, so it is not classified as a server/bot request.
         return "OpenPanel/\(OpenPanel.sdkVersion) (Model=\(hardwareModel); Manufacturer=Apple)"
     }
+
+    static var osName: String {
+        // Names must match ua-parser-js v2 vocabulary so app traffic shares
+        // dashboard buckets with web traffic ("macOS", not "Mac OS").
+        #if os(iOS)
+        return "iOS"
+        #elseif os(tvOS)
+        return "tvOS"
+        #elseif os(watchOS)
+        return "watchOS"
+        #elseif os(macOS)
+        return "macOS"
+        #else
+        return "Unknown"
+        #endif
+    }
+
+    static var osVersion: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    static var deviceType: String {
+        // Must match ua-parser-js v2 device types.
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile"
+        #elseif os(tvOS)
+        return "smarttv"
+        #elseif os(watchOS)
+        return "wearable"
+        #else
+        return "desktop"
+        #endif
+    }
+
+    /// Property overrides the backend prefers over user-agent parsing.
+    static func deviceProperties() -> [String: Any] {
+        return [
+            "__os": osName,
+            "__osVersion": osVersion,
+            "__device": deviceType,
+            "__brand": "Apple",
+            "__model": hardwareModel,
+        ]
+    }
 }
 
 // MARK: - Payload Types
@@ -296,7 +341,18 @@ public class OpenPanel {
     
     public static func initialize(options: Options) {
         shared.options = options
-        
+
+        let deviceDefaults = DeviceInfo.deviceProperties()
+        shared.globalQueue.async(flags: .barrier) {
+            // Device defaults sit under any user-set globals so explicit
+            // setGlobalProperties values always win.
+            var merged = deviceDefaults
+            if let existing = shared._global {
+                merged.merge(existing) { _, user in user }
+            }
+            shared._global = merged
+        }
+
         var defaultHeaders: [String: String] = [
             "openpanel-client-id": options.clientId,
             "openpanel-sdk-name": "swift",
@@ -433,8 +489,10 @@ public class OpenPanel {
     
     public static func clear() {
         shared.profileId = nil
+        // Wipe user-set globals but keep the device defaults seeded at initialize.
+        let deviceDefaults = shared.options != nil ? DeviceInfo.deviceProperties() : nil
         shared.globalQueue.async(flags: .barrier) {
-            shared._global = nil
+            shared._global = deviceDefaults
         }
     }
     
