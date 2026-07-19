@@ -11,7 +11,7 @@ The OpenPanel Swift SDK allows you to integrate OpenPanel analytics into your iO
 
 ## Requirements
 
-- iOS 13.0+ / macOS 10.15+ / tvOS 13.0+ / watchOS 6.0+
+- iOS 13.0+ / macOS 10.15+ / tvOS 13.0+ / watchOS 7.0+
 - Xcode 12.0+
 - Swift 5.3+
 

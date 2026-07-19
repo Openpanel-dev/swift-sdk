@@ -1,90 +1,88 @@
 import Foundation
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UIKit
-import WebKit
 #elseif os(macOS)
 import AppKit
-import WebKit
+#elseif os(watchOS)
+import WatchKit
 #endif
 
 // MARK: - DeviceInfo
 
 internal class DeviceInfo {
-    static func getUserAgent() -> String {
-        #if os(iOS)
-        return getiOSUserAgent()
-        #elseif os(macOS)
-        return getMacOSUserAgent()
+    /// Hardware model identifier, e.g. "iPhone15,2", "MacBookPro18,3", "AppleTV14,1".
+    static var hardwareModel: String {
+        // Simulators report the simulator's own hardware; the simulated device is in the environment.
+        if let simulatorModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return simulatorModel
+        }
+        #if os(macOS)
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "Mac" }
+        var buffer = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &buffer, &size, nil, 0)
+        return String(cString: buffer)
         #else
-        return getGenericUserAgent()
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { buffer -> String in
+            guard let base = buffer.baseAddress else { return "" }
+            return String(cString: base.assumingMemoryBound(to: CChar.self))
+        }
+        return machine.isEmpty ? "Apple" : machine
         #endif
     }
-    
-    private static func isRunningInExtension() -> Bool {
-        return Bundle.main.bundlePath.hasSuffix(".appex")
+
+    static func getUserAgent() -> String {
+        // The Model=/Manufacturer= form is recognized by the OpenPanel backend as
+        // app traffic, so it is not classified as a server/bot request.
+        return "OpenPanel/\(OpenPanel.sdkVersion) (Model=\(hardwareModel); Manufacturer=Apple)"
     }
 
-    #if os(iOS)
-    private static func getiOSUserAgent() -> String {
-        if !isRunningInExtension() {
-            let webView = WKWebView(frame: .zero)
-            var userAgent = ""
-            
-            let semaphore = DispatchSemaphore(value: 0)
-            
-            DispatchQueue.main.async {
-                webView.evaluateJavaScript("navigator.userAgent") { (result, error) in
-                    if let agent = result as? String {
-                        userAgent = agent
-                    }
-                    semaphore.signal()
-                }
-            }
-            
-            _ = semaphore.wait(timeout: .now() + 1.0)
-
-            userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
-            
-            if userAgent.isEmpty {
-                userAgent = getBasicUserAgent()
-            }
-            
-            return userAgent
-        } else {
-            return getBasicUserAgent()
-        }
+    static var osName: String {
+        // Names must match ua-parser-js v2 vocabulary so app traffic shares
+        // dashboard buckets with web traffic ("macOS", not "Mac OS").
+        #if os(iOS)
+        return "iOS"
+        #elseif os(tvOS)
+        return "tvOS"
+        #elseif os(watchOS)
+        return "watchOS"
+        #elseif os(macOS)
+        return "macOS"
+        #else
+        return "Unknown"
+        #endif
     }
 
-    private static func getBasicUserAgent() -> String {
-        let device = UIDevice.current
-        let systemVersion = device.systemVersion
-        let model = device.model
-        let systemName = device.systemName
-
-        // Construct a user agent string manually with more detailed information
-        var userAgent = "Mozilla/5.0 (\(model); \(systemName) \(systemVersion.replacingOccurrences(of: ".", with: "_")); like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/\(systemVersion)"
-
-        // Append your custom string if necessary
-        userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
-
-        return userAgent
+    static var osVersion: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
     }
-    #endif
 
-    private static func getMacOSUserAgent() -> String {
-        let processInfo = ProcessInfo.processInfo
-        let osVersion = processInfo.operatingSystemVersionString
-        let versionParts = osVersion.components(separatedBy: " ")
-        let version = versionParts.count > 1 ? versionParts[1] : "Unknown"
-        
-        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version.replacingOccurrences(of: ".", with: "_"))) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
-        
-        return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
+    static var deviceType: String {
+        // Must match ua-parser-js v2 device types.
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile"
+        #elseif os(tvOS)
+        return "smarttv"
+        #elseif os(watchOS)
+        return "wearable"
+        #else
+        return "desktop"
+        #endif
     }
-    
-    private static func getGenericUserAgent() -> String {
-        let osName = ProcessInfo.processInfo.operatingSystemVersionString
-        return "OpenPanel/\(OpenPanel.sdkVersion) (\(osName))"
+
+    /// Property overrides the backend prefers over user-agent parsing.
+    static func deviceProperties() -> [String: Any] {
+        return [
+            "__os": osName,
+            "__osVersion": osVersion,
+            "__device": deviceType,
+            "__brand": "Apple",
+            "__model": hardwareModel,
+        ]
     }
 }
 
@@ -309,7 +307,9 @@ public class OpenPanel {
         set { globalQueue.async(flags: .barrier) { self._global = newValue } }
     }
     private var queue: [TrackHandlerPayload] = []
-    private let operationQueue: OperationQueue
+    // Tail of the in-flight send chain; each new send awaits the previous one
+    // so events reach the server in the order they were tracked.
+    private var sendTask: Task<Void, Never>?
     
     public struct Options {
         public let clientId: String
@@ -334,18 +334,27 @@ public class OpenPanel {
     private var options: Options?
     
     public static var sdkVersion: String {
-        return "0.0.1"
+        return "1.0.1"
     }
     
     private init() {
         self.api = Api(config: Api.Config(baseUrl: "https://api.openpanel.dev"))
-        self.operationQueue = OperationQueue()
-        self.operationQueue.maxConcurrentOperationCount = 1
     }
     
     public static func initialize(options: Options) {
         shared.options = options
-        
+
+        let deviceDefaults = DeviceInfo.deviceProperties()
+        shared.globalQueue.async(flags: .barrier) {
+            // Device defaults sit under any user-set globals so explicit
+            // setGlobalProperties values always win.
+            var merged = deviceDefaults
+            if let existing = shared._global {
+                merged.merge(existing) { _, user in user }
+            }
+            shared._global = merged
+        }
+
         var defaultHeaders: [String: String] = [
             "openpanel-client-id": options.clientId,
             "openpanel-sdk-name": "swift",
@@ -387,13 +396,17 @@ public class OpenPanel {
         }
         
         if options.waitForProfile == true, profileId == nil {
-            queue.append(payload)
+            globalQueue.async(flags: .barrier) {
+                self.queue.append(payload)
+            }
             return
         }
         
-        let operation = BlockOperation {
-            Task {
-                let updatedPayload = self.ensureProfileId(payload)
+        let updatedPayload = ensureProfileId(payload)
+        globalQueue.async(flags: .barrier) {
+            let previous = self.sendTask
+            self.sendTask = Task {
+                await previous?.value
                 let result = await self.api.fetch(path: "/track", data: updatedPayload)
                 switch result {
                 case .success:
@@ -403,7 +416,6 @@ public class OpenPanel {
                 }
             }
         }
-        operationQueue.addOperation(operation)
     }
     
     private func ensureProfileId(_ payload: TrackHandlerPayload) -> TrackHandlerPayload {
@@ -457,7 +469,7 @@ public class OpenPanel {
                 if let global = shared._global {
                     var mergedProperties = global
                     if let payloadProperties = payload.properties {
-                        mergedProperties.merge(payloadProperties) { (_, new) in (new as AnyObject).value }
+                        mergedProperties.merge(payloadProperties) { (_, new) in (new as? AnyCodable)?.value ?? new }
                     }
                     updatedPayload.properties = mergedProperties.mapValues { AnyCodable($0) }
                 }
@@ -480,14 +492,19 @@ public class OpenPanel {
     
     public static func clear() {
         shared.profileId = nil
+        // Wipe user-set globals but keep the device defaults seeded at initialize.
+        let deviceDefaults = shared.options != nil ? DeviceInfo.deviceProperties() : nil
         shared.globalQueue.async(flags: .barrier) {
-            shared._global = nil
+            shared._global = deviceDefaults
         }
     }
     
     public func flush() {
-        let currentQueue = queue
-        queue.removeAll()
+        let currentQueue = globalQueue.sync(flags: .barrier) { () -> [TrackHandlerPayload] in
+            let items = queue
+            queue.removeAll()
+            return items
+        }
         for item in currentQueue {
             send(item)
         }
@@ -525,6 +542,19 @@ public class OpenPanel {
             name: NSApplication.willTerminateNotification,
             object: nil
         )
+        #elseif os(watchOS)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: WKExtension.applicationDidBecomeActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: WKExtension.applicationDidEnterBackgroundNotification,
+            object: nil
+        )
         #endif
     }
 
@@ -550,6 +580,14 @@ public class OpenPanel {
     }
 
     @objc private func appWillTerminate() {
+        OpenPanel.track(name: "app_closed")
+    }
+    #elseif os(watchOS)
+    @objc private func appDidBecomeActive() {
+        OpenPanel.track(name: "app_opened")
+    }
+
+    @objc private func appDidEnterBackground() {
         OpenPanel.track(name: "app_closed")
     }
     #endif
