@@ -2,6 +2,8 @@ import Foundation
 #if os(iOS)
 import UIKit
 import WebKit
+#elseif os(tvOS)
+import UIKit
 #elseif os(macOS)
 import AppKit
 import WebKit
