@@ -3,6 +3,8 @@ import Foundation
 import UIKit
 #elseif os(macOS)
 import AppKit
+#elseif os(watchOS)
+import WatchKit
 #endif
 
 // MARK: - DeviceInfo
@@ -539,6 +541,19 @@ public class OpenPanel {
             name: NSApplication.willTerminateNotification,
             object: nil
         )
+        #elseif os(watchOS)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: WKExtension.applicationDidBecomeActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: WKExtension.applicationDidEnterBackgroundNotification,
+            object: nil
+        )
         #endif
     }
 
@@ -564,6 +579,14 @@ public class OpenPanel {
     }
 
     @objc private func appWillTerminate() {
+        OpenPanel.track(name: "app_closed")
+    }
+    #elseif os(watchOS)
+    @objc private func appDidBecomeActive() {
+        OpenPanel.track(name: "app_opened")
+    }
+
+    @objc private func appDidEnterBackground() {
         OpenPanel.track(name: "app_closed")
     }
     #endif
