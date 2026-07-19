@@ -307,7 +307,9 @@ public class OpenPanel {
         set { globalQueue.async(flags: .barrier) { self._global = newValue } }
     }
     private var queue: [TrackHandlerPayload] = []
-    private let operationQueue: OperationQueue
+    // Tail of the in-flight send chain; each new send awaits the previous one
+    // so events reach the server in the order they were tracked.
+    private var sendTask: Task<Void, Never>?
     
     public struct Options {
         public let clientId: String
@@ -337,8 +339,6 @@ public class OpenPanel {
     
     private init() {
         self.api = Api(config: Api.Config(baseUrl: "https://api.openpanel.dev"))
-        self.operationQueue = OperationQueue()
-        self.operationQueue.maxConcurrentOperationCount = 1
     }
     
     public static func initialize(options: Options) {
@@ -402,9 +402,11 @@ public class OpenPanel {
             return
         }
         
-        let operation = BlockOperation {
-            Task {
-                let updatedPayload = self.ensureProfileId(payload)
+        let updatedPayload = ensureProfileId(payload)
+        globalQueue.async(flags: .barrier) {
+            let previous = self.sendTask
+            self.sendTask = Task {
+                await previous?.value
                 let result = await self.api.fetch(path: "/track", data: updatedPayload)
                 switch result {
                 case .success:
@@ -414,7 +416,6 @@ public class OpenPanel {
                 }
             }
         }
-        operationQueue.addOperation(operation)
     }
     
     private func ensureProfileId(_ payload: TrackHandlerPayload) -> TrackHandlerPayload {
