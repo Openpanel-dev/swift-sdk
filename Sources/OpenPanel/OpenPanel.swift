@@ -43,13 +43,11 @@ internal class DeviceInfo {
             
             _ = semaphore.wait(timeout: .now() + 1.0)
 
-            userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
-            
             if userAgent.isEmpty {
-                userAgent = getBasicUserAgent()
+                return getBasicUserAgent()
             }
-            
-            return userAgent
+
+            return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
         } else {
             return getBasicUserAgent()
         }
