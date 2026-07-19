@@ -383,7 +383,9 @@ public class OpenPanel {
         }
         
         if options.waitForProfile == true, profileId == nil {
-            queue.append(payload)
+            globalQueue.async(flags: .barrier) {
+                self.queue.append(payload)
+            }
             return
         }
         
@@ -482,8 +484,11 @@ public class OpenPanel {
     }
     
     public func flush() {
-        let currentQueue = queue
-        queue.removeAll()
+        let currentQueue = globalQueue.sync(flags: .barrier) { () -> [TrackHandlerPayload] in
+            let items = queue
+            queue.removeAll()
+            return items
+        }
         for item in currentQueue {
             send(item)
         }
