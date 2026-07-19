@@ -332,7 +332,7 @@ public class OpenPanel {
     private var options: Options?
     
     public static var sdkVersion: String {
-        return "0.0.1"
+        return "1.0.1"
     }
     
     private init() {
