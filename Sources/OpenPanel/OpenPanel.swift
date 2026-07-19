@@ -72,12 +72,10 @@ internal class DeviceInfo {
     #endif
 
     private static func getMacOSUserAgent() -> String {
-        let processInfo = ProcessInfo.processInfo
-        let osVersion = processInfo.operatingSystemVersionString
-        let versionParts = osVersion.components(separatedBy: " ")
-        let version = versionParts.count > 1 ? versionParts[1] : "Unknown"
-        
-        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version.replacingOccurrences(of: ".", with: "_"))) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+        let version = "\(osVersion.majorVersion)_\(osVersion.minorVersion)_\(osVersion.patchVersion)"
+
+        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
         
         return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
     }
