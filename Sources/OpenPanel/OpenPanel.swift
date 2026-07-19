@@ -1,88 +1,41 @@
 import Foundation
-#if os(iOS)
-import UIKit
-import WebKit
-#elseif os(tvOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
-import WebKit
 #endif
 
 // MARK: - DeviceInfo
 
 internal class DeviceInfo {
-    static func getUserAgent() -> String {
-        #if os(iOS)
-        return getiOSUserAgent()
-        #elseif os(macOS)
-        return getMacOSUserAgent()
+    /// Hardware model identifier, e.g. "iPhone15,2", "MacBookPro18,3", "AppleTV14,1".
+    static var hardwareModel: String {
+        // Simulators report the simulator's own hardware; the simulated device is in the environment.
+        if let simulatorModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return simulatorModel
+        }
+        #if os(macOS)
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "Mac" }
+        var buffer = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &buffer, &size, nil, 0)
+        return String(cString: buffer)
         #else
-        return getGenericUserAgent()
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { buffer -> String in
+            guard let base = buffer.baseAddress else { return "" }
+            return String(cString: base.assumingMemoryBound(to: CChar.self))
+        }
+        return machine.isEmpty ? "Apple" : machine
         #endif
     }
-    
-    private static func isRunningInExtension() -> Bool {
-        return Bundle.main.bundlePath.hasSuffix(".appex")
-    }
 
-    #if os(iOS)
-    private static func getiOSUserAgent() -> String {
-        if !isRunningInExtension() {
-            let webView = WKWebView(frame: .zero)
-            var userAgent = ""
-            
-            let semaphore = DispatchSemaphore(value: 0)
-            
-            DispatchQueue.main.async {
-                webView.evaluateJavaScript("navigator.userAgent") { (result, error) in
-                    if let agent = result as? String {
-                        userAgent = agent
-                    }
-                    semaphore.signal()
-                }
-            }
-            
-            _ = semaphore.wait(timeout: .now() + 1.0)
-
-            if userAgent.isEmpty {
-                return getBasicUserAgent()
-            }
-
-            return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
-        } else {
-            return getBasicUserAgent()
-        }
-    }
-
-    private static func getBasicUserAgent() -> String {
-        let device = UIDevice.current
-        let systemVersion = device.systemVersion
-        let model = device.model
-        let systemName = device.systemName
-
-        // Construct a user agent string manually with more detailed information
-        var userAgent = "Mozilla/5.0 (\(model); \(systemName) \(systemVersion.replacingOccurrences(of: ".", with: "_")); like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/\(systemVersion)"
-
-        // Append your custom string if necessary
-        userAgent += " OpenPanel/\(OpenPanel.sdkVersion)"
-
-        return userAgent
-    }
-    #endif
-
-    private static func getMacOSUserAgent() -> String {
-        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
-        let version = "\(osVersion.majorVersion)_\(osVersion.minorVersion)_\(osVersion.patchVersion)"
-
-        let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X \(version)) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
-        
-        return userAgent + " OpenPanel/\(OpenPanel.sdkVersion)"
-    }
-    
-    private static func getGenericUserAgent() -> String {
-        let osName = ProcessInfo.processInfo.operatingSystemVersionString
-        return "OpenPanel/\(OpenPanel.sdkVersion) (\(osName))"
+    static func getUserAgent() -> String {
+        // The Model=/Manufacturer= form is recognized by the OpenPanel backend as
+        // app traffic, so it is not classified as a server/bot request.
+        return "OpenPanel/\(OpenPanel.sdkVersion) (Model=\(hardwareModel); Manufacturer=Apple)"
     }
 }
 
